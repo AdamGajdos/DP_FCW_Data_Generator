@@ -23,8 +23,10 @@ class RoadPointFinal:
     velocity: float
     steep: int
     angle: float
+    deceleration_lead: float
+    gear: int
 
-    def __init__(self, longitude, latitude, deceleration, velocity, relative_velocity, distance, steep, angle):
+    def __init__(self, longitude, latitude, deceleration, velocity, relative_velocity, distance, steep, angle, deceleration_lead, gear):
         self.longitude = longitude
         self.latitude = latitude
         self.deceleration = deceleration
@@ -33,6 +35,8 @@ class RoadPointFinal:
         self.distance = distance
         self.steep = steep
         self.angle = angle
+        self.deceleration_lead = deceleration_lead
+        self.gear = gear
 
 
 def set_road_points_tomtom(tomtom_json):
@@ -103,6 +107,8 @@ def create_testing_data(for_python: bool, source_file_name):
     max_relative_velocity = 8.3333  # difference in other vehicle's velocity is about 30 km/h
     relative_velocity_delta = 0.5  # +- 5 m/s
 
+    deceleration_lead = 0
+
     for idx, point in enumerate(tomtom_points):
 
         # DISTANCE
@@ -113,6 +119,27 @@ def create_testing_data(for_python: bool, source_file_name):
 
         # VELOCITY
         velocity = random.uniform(point.speed_limit - velocity_delta, velocity_delta + point.speed_limit)
+
+        # GEAR
+        # 110 km/h -> 30.5556 m/s - 6
+        # 90 km/h -> 25 m/s - 5
+        # 70 km/h -> 19.4444 m/s - 4
+        # 50 km/h -> 13.8889 m/s - 3
+        # 30 km/h -> 8.3333 m/s - 2
+        # 15 km/h -> 4.1667 m/s - 1
+        if velocity <= 4.1667:
+            gear = 1
+        elif velocity <= 8.3333:
+            gear = 2
+        elif velocity <= 13.8889:
+            gear = 3
+        elif velocity <= 19.4444:
+            gear = 4
+        elif velocity <= 25:
+            gear = 5
+        else:
+            gear = 6
+
 
         # RELATIVE VELOCITY
         if idx > 0:
@@ -182,6 +209,17 @@ def create_testing_data(for_python: bool, source_file_name):
         else:
             deceleration = random.uniform(-deceleration_values[indx_decel], deceleration_values[indx_decel])
 
+        # LEADING CAR DECELERATION - for ISO 15623:2013 verification
+        # if v_rel_prev > v_rel_now -> v_lead > v_our -> dec_lead < dec_our
+        # if v_rel_prev < v_rel_now -> v_lead < v_our -> dec_lead > dec_our
+        # if v_rel_prev ~= v_rel_now -> v_lead ~= v_our -> dec_lead ~= dec_our
+        if idx > 0:
+            velocity_lead = relative_velocity + velocity
+
+            deceleration_diff = velocity / velocity_lead
+
+            deceleration_lead = deceleration * deceleration_diff
+
         # OTHER VALUES
         steep = 1  # 1 is for UPHILL; -1 is for DOWNHILL
         angle = 0
@@ -193,7 +231,9 @@ def create_testing_data(for_python: bool, source_file_name):
                                     distance=distance,
                                     deceleration=deceleration,
                                     steep=steep,
-                                    angle=angle)
+                                    angle=angle,
+                                    deceleration_lead=deceleration_lead,
+                                    gear=gear)
 
         road_points.append(road_point)
         print(idx)
@@ -221,7 +261,9 @@ def create_testing_data(for_python: bool, source_file_name):
                     "condition": "DRY"
                 },
                 "steep": "UPHILL",
-                "angle": 0
+                "angle": 0,
+                "deceleration_lead": point.deceleration_lead,
+                "gear": point.gear
             }
 
             r_points.append(r_point)
@@ -250,6 +292,8 @@ def create_testing_data(for_python: bool, source_file_name):
         worksheet.write(0, 6, "Distance")
         worksheet.write(0, 7, "Steep")
         worksheet.write(0, 8, "Angle")
+        worksheet.write(0, 9, "DecelerationLead")
+        worksheet.write(0, 10, "Gear")
 
         for idx, point in enumerate(road_points):
             worksheet.write(idx + 1, 0, str(idx))
@@ -261,6 +305,8 @@ def create_testing_data(for_python: bool, source_file_name):
             worksheet.write(idx + 1, 6, str(point.distance))
             worksheet.write(idx + 1, 7, str(point.steep))
             worksheet.write(idx + 1, 8, str(point.angle))
+            worksheet.write(idx + 1, 9, str(point.deceleration_lead))
+            worksheet.write(idx + 1, 10, str(point.gear))
 
         workbook.close()
 
