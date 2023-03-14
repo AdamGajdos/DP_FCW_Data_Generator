@@ -1,6 +1,7 @@
 import json
 import random
 import xlsxwriter
+import math
 
 
 class RoadPointTomTom:
@@ -14,6 +15,27 @@ class RoadPointTomTom:
         self.speed_limit = speed_limit
 
 
+class RoadPoint:
+    deceleration: float
+    relative_velocity: float
+    distance: float
+    velocity: float
+    steep: int
+    angle: float
+    deceleration_lead: float
+    gear: int
+
+    def __init__(self, deceleration, velocity, relative_velocity, distance, steep, angle, deceleration_lead, gear):
+        self.deceleration = deceleration
+        self.velocity = velocity
+        self.relative_velocity = relative_velocity
+        self.distance = distance
+        self.steep = steep
+        self.angle = angle
+        self.deceleration_lead = deceleration_lead
+        self.gear = gear
+
+
 class RoadPointFinal:
     longitude: float
     latitude: float
@@ -25,8 +47,10 @@ class RoadPointFinal:
     angle: float
     deceleration_lead: float
     gear: int
+    speed_limit: float
 
-    def __init__(self, longitude, latitude, deceleration, velocity, relative_velocity, distance, steep, angle, deceleration_lead, gear):
+    def __init__(self, longitude, latitude, deceleration, velocity, relative_velocity, distance, steep, angle,
+                 deceleration_lead, gear, speed_limit):
         self.longitude = longitude
         self.latitude = latitude
         self.deceleration = deceleration
@@ -37,96 +61,195 @@ class RoadPointFinal:
         self.angle = angle
         self.deceleration_lead = deceleration_lead
         self.gear = gear
+        self.speed_limit = speed_limit
+
+
+class Point:
+    longitude: float
+    latitude: float
+
+    def __init__(self, longitude, latitude):
+        self.longitude = longitude
+        self.latitude = latitude
+
+
+__SPEED_130 = 36.1111  # in m/s
+__SPEED_110 = 30.5556  # in m/s
+__SPEED_90 = 25  # in m/s
+__SPEED_70 = 19.4444  # in m/s
+__SPEED_50 = 13.8889  # in m/s
+__SPEED_30 = 8.3333  # in m/s
+
+__SECTOR_LENGTH = 10
+
+
+class SectorState:
+    ACCELERATING = 1
+    DECELERATING = 2
+    CONSTANT = 3
 
 
 def set_road_points_tomtom(tomtom_json):
-    # Speed limits
-    # 90 km/h -> 25 m/s
-    # 70 km/h -> 19.4444 m/s
-    # 50 km/h -> 13.8889 m/s
-    # 30 km/h -> 8.3333 m/s
     __tomtom_points = []
 
-    for __point in tomtom_json['routes'][0]['legs'][0]['points']:
-        tomtom_point = RoadPointTomTom(longitude=__point['longitude'], latitude=__point['latitude'], speed_limit=0)
+    for idx, __point in enumerate(tomtom_json['routes'][0]['legs'][0]['points']):
+        tomtom_point = RoadPointTomTom(longitude=__point['longitude'], latitude=__point['latitude'], speed_limit=-1)
 
-        if (
-                48.98994 >= __point['longitude'] >= 48.97638 and 21.94134 >= __point['latitude'] >= 21.94089
-        ) or (
-                48.96604 >= __point['longitude'] >= 48.95713 and 21.94681 >= __point['latitude'] >= 21.94549
-        ) or (
-                48.95438 >= __point['longitude'] >= 48.9429 and 21.9451 >= __point['latitude'] >= 21.93883
-        ):
-            tomtom_point.speed_limit = 25.0
-
-        elif (
-                48.97638 >= __point['longitude'] >= 48.96725 and 21.94089 >= __point['latitude'] >= 21.94674
-        ) or (
-                48.95713 >= __point['longitude'] >= 48.95438 and 21.94549 >= __point['latitude'] >= 21.9451
-        ):
-            tomtom_point.speed_limit = 19.4444
-
-        else:
-            tomtom_point.speed_limit = 13.8889
+        # if 0 <= idx <= 8 or 24 <= idx <= 31 or 34 <= idx <= 52:
+        #     tomtom_point.speed_limit = 25.0
+        #
+        # elif 9 <= idx <= 21 or 32 <= idx <= 33:
+        #     tomtom_point.speed_limit = 19.4444
+        #
+        # else:
+        #     tomtom_point.speed_limit = 13.8889
 
         __tomtom_points.append(tomtom_point)
 
     return __tomtom_points
 
 
-def create_testing_data(for_python: bool, source_file_name):
+# calculation from: https://www.movable-type.co.uk/scripts/latlong.html
+def calculate_distance_2_points(point_a: Point, point_b: Point) -> float:
+    r = 6371000  # in m
 
-    f_coordinates = open(source_file_name, mode='r')
+    fi_1 = point_a.latitude * math.pi / 180
+    fi_2 = point_b.latitude * math.pi / 180
+    delta_fi = (point_b.latitude - point_a.latitude) * math.pi / 180
 
-    coordinates = json.load(f_coordinates)
+    delta_lambda = (point_b.longitude - point_a.longitude) * math.pi / 180
 
-    road_points = []
+    a = math.sin(delta_fi / 2) * math.sin(delta_fi / 2) + math.cos(fi_1) * math.cos(fi_2) * \
+        math.sin(delta_lambda / 2) * math.sin(delta_lambda / 2)
 
-    tomtom_points = set_road_points_tomtom(coordinates)
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
-    f_coordinates.close()
+    d = r * c  # in m
 
-    velocity_delta = 3.6  # +- 3.6 m/s
+    return d
 
-    # in m/s^2 ... skoda octavia accelerates 0-100 km/h in 6.8s -> max acceleration is 4.08 m/s^2
-    max_acceleration = 4.08
-    acceleration_delta = 0.5  # +- 0.5 m/s^2
 
-    # https://www.skoda-storyboard.com/en/skoda-world/innovation-and-technology/how-do-brakes-learn-how-to-brake/
-    # decelerates 100-0km/h in 33-34m https://www.toppr.com/guides/physics-formulas/deceleration-formula/ using
-    # formula a = (v^2 - u^2)/2s
-    max_deceleration = 9.32835
+def define_car_scenario(num_of_sectors: int) -> []:
+    scenario = []
 
-    # 90 - 70km/h ; 70 - 50km/h ; 50 - 30 km/h; 100-0km/h ... first 3 are stopping on 50m; last one is max deceleration
-    deceleration_values = [2.46915, 1.85183, 1.23458, max_deceleration]
-    normal_deceleration_delta = 0.4  # +- 0.4 m/s^2
+    scenarios = [SectorState.ACCELERATING, SectorState.DECELERATING, SectorState.CONSTANT]
 
-    max_distance = 150  # in m ... max detectable distance for obstacle
-    distance_delta = 5  # in m
+    for i in range(num_of_sectors):
+        scenario.append(scenarios[int(random.uniform(0, scenarios.__len__()))])
 
-    max_relative_velocity = 8.3333  # difference in other vehicle's velocity is about 30 km/h
-    relative_velocity_delta = 0.5  # +- 5 m/s
+    return scenario
 
-    deceleration_lead = 0
 
-    for idx, point in enumerate(tomtom_points):
+def gen_data_for_sector(scenario_state: int, is_first: bool, other_values: dict,
+                        max_speed: float, min_speed: float) -> dict:
+    result = {
+        "start_velocity": 0,
+        "start_deceleration": 0,
+        "end_velocity": 0,
+        "end_deceleration": 0,
+        "adjustment_velocity": 0,
+        "adjustment_deceleration": 0,
+        "scenario_state": scenario_state
+    }
 
-        # DISTANCE
-        if idx > 0:
-            distance = random.uniform(road_points[idx - 1].distance - distance_delta, max_distance)
+    if scenario_state == SectorState.ACCELERATING:
+        if is_first:
+            start_velocity = random.uniform(min_speed, max_speed)
+            start_deceleration = 0
         else:
-            distance = random.uniform(0, max_distance)
+            start_velocity = other_values.get('velocity')
+            start_deceleration = other_values.get('deceleration')
 
-        # VELOCITY
-        velocity = random.uniform(point.speed_limit - velocity_delta, velocity_delta + point.speed_limit)
+        end_velocity = random.uniform(start_velocity + 1, max_speed)
+        velocity_diff = abs(start_velocity - end_velocity)
+        velocity_adjustment = velocity_diff / other_values.get('sector_length')
 
-        # GEAR
-        # 110 km/h -> 30.5556 m/s - 6
-        # 90 km/h -> 25 m/s - 5
-        # 70 km/h -> 19.4444 m/s - 4
-        # 50 km/h -> 13.8889 m/s - 3
-        # 30 km/h -> 8.3333 m/s - 2
-        # 15 km/h -> 4.1667 m/s - 1
+        s = calculate_distance_2_points(point_a=Point(longitude=other_values.get('start_lon'),
+                                                      latitude=other_values.get('start_lat')),
+                                        point_b=Point(longitude=other_values.get('end_lon'),
+                                                      latitude=other_values.get('end_lat')))
+
+        s_delta = s / other_values.get('sector_length')
+
+        t = 0  # time spent traveling between 2 points
+        velocity_actual = start_velocity
+        for i in range(other_values.get('sector_length')):  # s = v * t
+            t += s_delta / velocity_actual
+            velocity_actual += velocity_adjustment
+
+        end_deceleration = velocity_diff / t
+        deceleration_diff = abs(start_deceleration - end_deceleration)
+
+        deceleration_adjustment = deceleration_diff / other_values.get('sector_length')
+
+    elif scenario_state == SectorState.DECELERATING:
+        if is_first:
+            start_velocity = random.uniform(min_speed, max_speed)
+            start_deceleration = 0
+        else:
+            start_velocity = other_values.get('velocity')
+            start_deceleration = other_values.get('deceleration')
+
+        end_velocity = random.uniform(min_speed, start_velocity - 1)  # -1 m/s -> 3.6 km/h
+        velocity_diff = abs(start_velocity - end_velocity)
+        velocity_adjustment = velocity_diff / other_values.get('sector_length')
+
+        s = calculate_distance_2_points(point_a=Point(longitude=other_values.get('start_lon'),
+                                                      latitude=other_values.get('start_lat')),
+                                        point_b=Point(longitude=other_values.get('end_lon'),
+                                                      latitude=other_values.get('end_lat')))
+
+        s_delta = s / other_values.get('sector_length')
+
+        t = 0  # time spent traveling between 2 points
+        velocity_actual = start_velocity
+        for i in range(other_values.get('sector_length')):  # s = v * t
+            t += s_delta / velocity_actual
+            velocity_actual += velocity_adjustment
+
+        end_deceleration = velocity_diff / t
+        deceleration_diff = abs(start_deceleration - end_deceleration)
+
+        deceleration_adjustment = deceleration_diff / other_values.get('sector_length')
+
+    else:
+        if is_first:
+            start_velocity = random.uniform(min_speed, max_speed)
+        else:
+            start_velocity = other_values.get('velocity')
+
+        end_velocity = start_velocity
+        velocity_diff = abs(start_velocity - end_velocity)
+        velocity_adjustment = velocity_diff / other_values.get('sector_length')
+
+        start_deceleration = 0
+        end_deceleration = start_deceleration
+        deceleration_diff = abs(start_deceleration - end_deceleration)
+        deceleration_adjustment = deceleration_diff / other_values.get('sector_length')
+
+    result['start_velocity'] = start_velocity
+    result['start_deceleration'] = start_deceleration
+
+    result['end_velocity'] = end_velocity
+    result['end_deceleration'] = end_deceleration
+
+    result['adjustment_velocity'] = velocity_adjustment
+    result['adjustment_deceleration'] = deceleration_adjustment
+
+    return result
+
+
+def process_sector(sector_data: dict, sector_length: int) -> []:
+    result = []
+
+    velocity = sector_data["start_velocity"]
+    velocity_adjustment = sector_data["adjustment_velocity"]
+    deceleration = sector_data["start_deceleration"]
+    deceleration_adjustment = sector_data["adjustment_deceleration"]
+    scenario_state = sector_data["scenario_state"]
+
+    for idx in range(sector_length):
+
         if velocity <= 4.1667:
             gear = 1
         elif velocity <= 8.3333:
@@ -140,103 +263,155 @@ def create_testing_data(for_python: bool, source_file_name):
         else:
             gear = 6
 
+        result.append(RoadPoint(
+            deceleration=deceleration,
+            deceleration_lead=0,
+            velocity=velocity,
+            relative_velocity=0,
+            distance=150,
+            angle=0,
+            steep=1,
+            gear=gear
+        ))
 
-        # RELATIVE VELOCITY
-        if idx > 0:
-            # speed up and got closer
-            # OR
-            # speed down but obstacle is closer
-            if (velocity > road_points[idx - 1].velocity and distance < road_points[idx - 1].distance) or (
-                    velocity < road_points[idx - 1].velocity and distance < road_points[idx - 1].distance):
+        if scenario_state == SectorState.ACCELERATING:
+            velocity += velocity_adjustment
+            deceleration += deceleration_adjustment
 
-                relative_velocity = random.uniform(road_points[idx - 1].relative_velocity,
-                                                   road_points[idx - 1].relative_velocity + relative_velocity_delta)
+        elif scenario_state == SectorState.DECELERATING:
+            velocity -= velocity_adjustment
+            deceleration -= deceleration_adjustment
 
-            # speed up but so does leading car/obstacle
-            # OR
-            # speed down and obstacle is farther
-            elif (velocity > road_points[idx - 1].velocity and distance > road_points[idx - 1].distance) or (
-                    velocity < road_points[idx - 1].velocity and distance > road_points[idx - 1].distance):
+    return result
 
-                relative_velocity = random.uniform(road_points[idx - 1].relative_velocity - relative_velocity_delta,
-                                                   road_points[idx - 1].relative_velocity)
 
-            # speed and distance is constant
-            elif abs(velocity - road_points[idx - 1].velocity) < 0.0000000001 and abs(
-                    distance - road_points[idx - 1].distance) < 0.0000000001:
+def gen_data(scenario: [], max_speed: float, min_speed: float, road_data: []) -> []:
+    res_data = [RoadPoint]
+    other_values = {}
+    num_of_points = road_data.__len__()
 
-                relative_velocity = 0.0000000001
+    for idx, sector in enumerate(scenario):
 
+        sector_length = __SECTOR_LENGTH
+
+        if idx == (scenario.__len__() - 1):
+            if (num_of_points % __SECTOR_LENGTH) < 5:
+                sector_length += (num_of_points % __SECTOR_LENGTH)
+            elif (num_of_points % __SECTOR_LENGTH) < __SECTOR_LENGTH:
+                sector_length = num_of_points % __SECTOR_LENGTH
+
+        start_idx = idx * __SECTOR_LENGTH
+        end_idx = start_idx + sector_length - 1
+
+        other_values["sector_length"] = sector_length
+        other_values["start_lon"] = road_data[start_idx].longitude
+        other_values["start_lat"] = road_data[start_idx].latitude
+        other_values["end_lon"] = road_data[end_idx].longitude
+        other_values["end_lat"] = road_data[end_idx].latitude
+
+        if idx == 0:
+            is_first = True
+        else:
+            is_first = False
+            other_values["velocity"] = res_data[start_idx - 1].velocity
+            other_values["deceleration"] = res_data[start_idx - 1].deceleration
+
+        sector_processed = process_sector(sector_data=gen_data_for_sector(scenario_state=sector,
+                                                                          is_first=is_first,
+                                                                          min_speed=min_speed,
+                                                                          max_speed=max_speed,
+                                                                          other_values=other_values),
+                                          sector_length=sector_length)
+
+        for point in sector_processed:
+            res_data.append(point)
+
+    return res_data
+
+
+def process_scenario(lead_vehicle: bool, road_data: [], scenario: []) -> []:
+    if lead_vehicle:
+        min_speed = __SPEED_70
+        max_speed = __SPEED_110
+    else:
+        min_speed = __SPEED_50
+        max_speed = __SPEED_90
+
+    complete_scenario = gen_data(scenario=scenario, road_data=road_data,
+                                 max_speed=max_speed, min_speed=min_speed)
+
+    complete_scenario.remove(complete_scenario[0])
+
+    return complete_scenario
+
+
+def generate_test_data(road_points: []) -> []:
+    result = []
+
+    num_of_sectors = int(road_points.__len__() / __SECTOR_LENGTH)
+
+    scenario = define_car_scenario(num_of_sectors=num_of_sectors)
+
+    our_vehicle = process_scenario(lead_vehicle=False, road_data=road_points, scenario=scenario)
+
+    lead_vehicle = process_scenario(lead_vehicle=True, road_data=road_points, scenario=scenario)
+
+    for idx, point in enumerate(our_vehicle):
+        point.relative_velocity = lead_vehicle[idx].velocity - point.velocity
+        point.deceleration_lead = lead_vehicle[idx].deceleration
+
+        if idx == 0:
+            point.distance = 150
+        else:
+            if -0.1 < point.relative_velocity < 0.1:  # constant motion, distance is preserved
+                distance_adjustment = 0
             else:
-                relative_velocity = random.uniform(max_relative_velocity - relative_velocity_delta,
-                                                   max_relative_velocity + relative_velocity_delta)
-        else:
-            relative_velocity = 0.0000000001
+                # rel_velocity <= -0.1 ... leading vehicle is getting closer
+                # rel_velocity >=  0.1 ... leading vehicle is getting away
+                s = calculate_distance_2_points(point_a=Point(longitude=road_points[idx - 1].longitude,
+                                                              latitude=road_points[idx - 1].latitude),
+                                                point_b=Point(longitude=road_points[idx].longitude,
+                                                              latitude=road_points[idx].latitude))
 
-        # DECELERATION
-        if 25 >= point.speed_limit <= 19.4444:
-            indx_decel = 0
-        elif 19.4444 >= point.speed_limit <= 13.8889:
-            indx_decel = 1
-        elif 13.8889 >= point.speed_limit <= 8.3333:
-            indx_decel = 2
-        else:
-            indx_decel = 3
+                t_our = s / point.velocity  # time needed to travel distance between 2 points in our vehicle
+                t_lead = s / lead_vehicle[idx].velocity  # time needed to travel -||- in leading vehicle
 
-        # relative velocity = v_lead - v_ours
-        # if v_rel > 0  ... leading vehicle is moving faster
-        # if v_rel < 0  ... our vehicle is moving faster
-        # if v_rel == 0 ... constant speed of both vehicles
-        if idx > 0:
-            if distance < road_points[idx - 1].distance:
-                # accelerating
-                if velocity > road_points[idx - 1].velocity:
-                    deceleration = - random.uniform(acceleration_delta, max_acceleration)
+                t_diff = t_lead - t_our
+                # when lead is faster -> t_diff < 0 (t_lead < t_our) -> v_rel >= 0.1 - AWAY
+                # when our is faster -> t_diff > 0 (t_lead > t_our) -> v_rel <= -0.1 - CLOSER
 
-                # decelerating
-                else:
-                    deceleration = random.uniform(normal_deceleration_delta, deceleration_values[indx_decel])
+                distance_adjustment = point.relative_velocity * t_diff  # relative distance traveled between 2 points
 
-            else:
-                # accelerating
-                if velocity > road_points[idx - 1].velocity:
-                    deceleration = - random.uniform(0, max_acceleration)
+                if point.relative_velocity >= 0.1:
+                    distance_adjustment *= -1  # the distance is increasing
 
-                # decelerating
-                else:
-                    deceleration = random.uniform(0, deceleration_values[indx_decel])
+            point.distance = result[idx - 1].distance + distance_adjustment
 
-        else:
-            deceleration = random.uniform(-deceleration_values[indx_decel], deceleration_values[indx_decel])
+        result.append(RoadPointFinal(
+            longitude=road_points[idx].longitude,
+            latitude=road_points[idx].latitude,
+            velocity=point.velocity,
+            relative_velocity=point.relative_velocity,
+            deceleration=point.deceleration,
+            deceleration_lead=point.deceleration_lead,
+            distance=point.distance,
+            gear=point.gear,
+            steep=point.steep,
+            angle=point.angle,
+            speed_limit=-1
+        ))
 
-        # LEADING CAR DECELERATION - for ISO 15623:2013 verification
-        # if v_rel_prev > v_rel_now -> v_lead > v_our -> dec_lead < dec_our
-        # if v_rel_prev < v_rel_now -> v_lead < v_our -> dec_lead > dec_our
-        # if v_rel_prev ~= v_rel_now -> v_lead ~= v_our -> dec_lead ~= dec_our
-        if idx > 0:
-            velocity_lead = relative_velocity + velocity
+    return result
 
-            deceleration_diff = velocity / velocity_lead
 
-            deceleration_lead = deceleration * deceleration_diff
+def create_testing_data(for_python: bool, source_file_name):
+    f_coordinates = open(source_file_name, mode='r')
 
-        # OTHER VALUES
-        steep = 1  # 1 is for UPHILL; -1 is for DOWNHILL
-        angle = 0
+    coordinates = json.load(f_coordinates)
 
-        road_point = RoadPointFinal(longitude=point.longitude,
-                                    latitude=point.latitude,
-                                    relative_velocity=relative_velocity,
-                                    velocity=velocity,
-                                    distance=distance,
-                                    deceleration=deceleration,
-                                    steep=steep,
-                                    angle=angle,
-                                    deceleration_lead=deceleration_lead,
-                                    gear=gear)
+    tomtom_points = set_road_points_tomtom(coordinates)
 
-        road_points.append(road_point)
-        print(idx)
+    road_points = generate_test_data(road_points=tomtom_points)
 
     if for_python:
 
@@ -297,15 +472,15 @@ def create_testing_data(for_python: bool, source_file_name):
 
         for idx, point in enumerate(road_points):
             worksheet.write(idx + 1, 0, str(idx))
-            worksheet.write(idx + 1, 1, str(point.longitude))
-            worksheet.write(idx + 1, 2, str(point.latitude))
-            worksheet.write(idx + 1, 3, str(point.velocity))
-            worksheet.write(idx + 1, 4, str(point.relative_velocity))
-            worksheet.write(idx + 1, 5, str(point.deceleration))
-            worksheet.write(idx + 1, 6, str(point.distance))
+            worksheet.write(idx + 1, 1, str(point.longitude).replace('.', ','))
+            worksheet.write(idx + 1, 2, str(point.latitude).replace('.', ','))
+            worksheet.write(idx + 1, 3, str(point.velocity).replace('.', ','))
+            worksheet.write(idx + 1, 4, str(point.relative_velocity).replace('.', ','))
+            worksheet.write(idx + 1, 5, str(point.deceleration).replace('.', ','))
+            worksheet.write(idx + 1, 6, str(point.distance).replace('.', ','))
             worksheet.write(idx + 1, 7, str(point.steep))
-            worksheet.write(idx + 1, 8, str(point.angle))
-            worksheet.write(idx + 1, 9, str(point.deceleration_lead))
+            worksheet.write(idx + 1, 8, str(point.angle).replace('.', ','))
+            worksheet.write(idx + 1, 9, str(point.deceleration_lead).replace('.', ','))
             worksheet.write(idx + 1, 10, str(point.gear))
 
         workbook.close()
@@ -315,4 +490,4 @@ def create_testing_data(for_python: bool, source_file_name):
 
 f_name = 'TomTomApi_Modelovany_usek_cesty_response_1671693978046.json'
 
-create_testing_data(for_python=True, source_file_name=f_name)
+create_testing_data(for_python=False, source_file_name=f_name)
