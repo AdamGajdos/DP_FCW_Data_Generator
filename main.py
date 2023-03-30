@@ -2,6 +2,7 @@ import json
 import random
 import xlsxwriter
 import math
+import numpy
 
 
 class RoadPointTomTom:
@@ -95,15 +96,6 @@ def set_road_points_tomtom(tomtom_json):
     for idx, __point in enumerate(tomtom_json['routes'][0]['legs'][0]['points']):
         tomtom_point = RoadPointTomTom(longitude=__point['longitude'], latitude=__point['latitude'], speed_limit=-1)
 
-        # if 0 <= idx <= 8 or 24 <= idx <= 31 or 34 <= idx <= 52:
-        #     tomtom_point.speed_limit = 25.0
-        #
-        # elif 9 <= idx <= 21 or 32 <= idx <= 33:
-        #     tomtom_point.speed_limit = 19.4444
-        #
-        # else:
-        #     tomtom_point.speed_limit = 13.8889
-
         __tomtom_points.append(tomtom_point)
 
     return __tomtom_points
@@ -129,7 +121,7 @@ def calculate_distance_2_points(point_a: Point, point_b: Point) -> float:
     return d
 
 
-def define_car_scenario(num_of_sectors: int) -> []:
+def create_scenario(num_of_sectors: int) -> []:
     scenario = []
 
     scenarios = [SectorState.ACCELERATING, SectorState.DECELERATING, SectorState.CONSTANT]
@@ -160,22 +152,22 @@ def gen_data_for_sector(scenario_state: int, is_first: bool, other_values: dict,
             start_velocity = other_values.get('velocity')
             start_deceleration = other_values.get('deceleration')
 
-        end_velocity = random.uniform(start_velocity + 1, max_speed)
+        end_velocity = random.uniform(start_velocity + 5, max_speed)  # 5 m/s -> 18 km/h
         velocity_diff = abs(start_velocity - end_velocity)
         velocity_adjustment = velocity_diff / other_values.get('sector_length')
 
-        s = calculate_distance_2_points(point_a=Point(longitude=other_values.get('start_lon'),
-                                                      latitude=other_values.get('start_lat')),
-                                        point_b=Point(longitude=other_values.get('end_lon'),
-                                                      latitude=other_values.get('end_lat')))
-
-        s_delta = s / other_values.get('sector_length')
-
+        points = other_values.get('points')
         t = 0  # time spent traveling between 2 points
         velocity_actual = start_velocity
-        for i in range(other_values.get('sector_length')):  # s = v * t
-            t += s_delta / velocity_actual
-            velocity_actual += velocity_adjustment
+        for idx, point in enumerate(points):
+            if idx > 0:
+
+                s = calculate_distance_2_points(point_a=Point(longitude=points[idx-1].longitude,
+                                                              latitude=points[idx-1].latitude),
+                                                point_b=Point(longitude=point.longitude,
+                                                              latitude=point.latitude))
+                t += s / velocity_actual
+                velocity_actual += velocity_adjustment
 
         end_deceleration = velocity_diff / t
         deceleration_diff = abs(start_deceleration - end_deceleration)
@@ -190,22 +182,21 @@ def gen_data_for_sector(scenario_state: int, is_first: bool, other_values: dict,
             start_velocity = other_values.get('velocity')
             start_deceleration = other_values.get('deceleration')
 
-        end_velocity = random.uniform(min_speed, start_velocity - 1)  # -1 m/s -> 3.6 km/h
+        end_velocity = random.uniform(min_speed, start_velocity - 5)  # -5 m/s -> 18 km/h
         velocity_diff = abs(start_velocity - end_velocity)
         velocity_adjustment = velocity_diff / other_values.get('sector_length')
 
-        s = calculate_distance_2_points(point_a=Point(longitude=other_values.get('start_lon'),
-                                                      latitude=other_values.get('start_lat')),
-                                        point_b=Point(longitude=other_values.get('end_lon'),
-                                                      latitude=other_values.get('end_lat')))
-
-        s_delta = s / other_values.get('sector_length')
-
+        points = other_values.get('points')
         t = 0  # time spent traveling between 2 points
         velocity_actual = start_velocity
-        for i in range(other_values.get('sector_length')):  # s = v * t
-            t += s_delta / velocity_actual
-            velocity_actual += velocity_adjustment
+        for idx, point in enumerate(points):
+            if idx > 0:
+                s = calculate_distance_2_points(point_a=Point(longitude=points[idx-1].longitude,
+                                                              latitude=points[idx-1].latitude),
+                                                point_b=Point(longitude=point.longitude,
+                                                              latitude=point.latitude))
+                t += s / velocity_actual
+                velocity_actual -= velocity_adjustment
 
         end_deceleration = velocity_diff / t
         deceleration_diff = abs(start_deceleration - end_deceleration)
@@ -276,11 +267,11 @@ def process_sector(sector_data: dict, sector_length: int) -> []:
 
         if scenario_state == SectorState.ACCELERATING:
             velocity += velocity_adjustment
-            deceleration += deceleration_adjustment
+            deceleration -= deceleration_adjustment
 
         elif scenario_state == SectorState.DECELERATING:
             velocity -= velocity_adjustment
-            deceleration -= deceleration_adjustment
+            deceleration += deceleration_adjustment
 
     return result
 
@@ -304,10 +295,7 @@ def gen_data(scenario: [], max_speed: float, min_speed: float, road_data: []) ->
         end_idx = start_idx + sector_length - 1
 
         other_values["sector_length"] = sector_length
-        other_values["start_lon"] = road_data[start_idx].longitude
-        other_values["start_lat"] = road_data[start_idx].latitude
-        other_values["end_lon"] = road_data[end_idx].longitude
-        other_values["end_lat"] = road_data[end_idx].latitude
+        other_values["points"] = road_data[start_idx:end_idx+1]       # new
 
         if idx == 0:
             is_first = True
@@ -340,7 +328,7 @@ def process_scenario(lead_vehicle: bool, road_data: [], scenario: []) -> []:
     complete_scenario = gen_data(scenario=scenario, road_data=road_data,
                                  max_speed=max_speed, min_speed=min_speed)
 
-    complete_scenario.remove(complete_scenario[0])
+    complete_scenario.remove(complete_scenario[0])  # first element was empty
 
     return complete_scenario
 
@@ -350,9 +338,11 @@ def generate_test_data(road_points: []) -> []:
 
     num_of_sectors = int(road_points.__len__() / __SECTOR_LENGTH)
 
-    scenario = define_car_scenario(num_of_sectors=num_of_sectors)
+    scenario = create_scenario(num_of_sectors=num_of_sectors)
 
     our_vehicle = process_scenario(lead_vehicle=False, road_data=road_points, scenario=scenario)
+
+    # scenario = create_scenario(num_of_sectors=num_of_sectors)
 
     lead_vehicle = process_scenario(lead_vehicle=True, road_data=road_points, scenario=scenario)
 
@@ -363,11 +353,11 @@ def generate_test_data(road_points: []) -> []:
         if idx == 0:
             point.distance = 150
         else:
-            if -0.1 < point.relative_velocity < 0.1:  # constant motion, distance is preserved
+            if -0.5 < point.relative_velocity < 0.5:  # constant motion, distance is preserved
                 distance_adjustment = 0
             else:
-                # rel_velocity <= -0.1 ... leading vehicle is getting closer
-                # rel_velocity >=  0.1 ... leading vehicle is getting away
+                # rel_velocity <= -0.5 ... leading vehicle is getting closer
+                # rel_velocity >=  0.5 ... leading vehicle is getting away
                 s = calculate_distance_2_points(point_a=Point(longitude=road_points[idx - 1].longitude,
                                                               latitude=road_points[idx - 1].latitude),
                                                 point_b=Point(longitude=road_points[idx].longitude,
@@ -377,15 +367,16 @@ def generate_test_data(road_points: []) -> []:
                 t_lead = s / lead_vehicle[idx].velocity  # time needed to travel -||- in leading vehicle
 
                 t_diff = t_lead - t_our
-                # when lead is faster -> t_diff < 0 (t_lead < t_our) -> v_rel >= 0.1 - AWAY
-                # when our is faster -> t_diff > 0 (t_lead > t_our) -> v_rel <= -0.1 - CLOSER
+                # when lead is faster -> t_diff < 0 (t_lead < t_our) -> v_rel >= 0.5 - AWAY
+                # when our is faster -> t_diff > 0 (t_lead > t_our) -> v_rel <= -0.5 - CLOSER
 
                 distance_adjustment = point.relative_velocity * t_diff  # relative distance traveled between 2 points
 
-                if point.relative_velocity >= 0.1:
+                if point.relative_velocity >= 0:
                     distance_adjustment *= -1  # the distance is increasing
 
-            point.distance = result[idx - 1].distance + distance_adjustment
+            point.distance = numpy.clip(a=result[idx - 1].distance + distance_adjustment, a_min=0, a_max=150)
+            # point.distance = numpy.clip(a=distance_adjustment, a_min=-150, a_max=150)
 
         result.append(RoadPointFinal(
             longitude=road_points[idx].longitude,
